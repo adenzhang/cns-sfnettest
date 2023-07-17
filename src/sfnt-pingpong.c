@@ -12,6 +12,8 @@
 
 #include "sfnettest.h"
 
+#define TEST_LATENCY
+
 static int         cfg_port = 2048;
 static int         cfg_connect[2];
 static const char* cfg_sizes;
@@ -558,7 +560,33 @@ static int recv_size(int sz)
 #endif
 }
 
+#ifdef TEST_LATENCY
+#define IS_TESTING_LATENCY 1
+static void do_ping(int read_fd, int write_fd, int sz)
+{
+  int i, rc; /* send_flags = cfg_msg_more[0] ? MSG_MORE : 0; */
+  for( i = 0; i < cfg_n_pings[0]; ++i ) {
+    rc = do_send(write_fd, ppbuf, sz, 0);
+    NT_TESTi3(rc, ==, sz);
+    rc = mux_recv(read_fd, ppbuf, recv_size(sz), MSG_WAITALL);
+    NT_TESTi3(rc, ==, sz);
+  }
+}
 
+static void do_pong(int read_fd, int write_fd, int recv_sz, int send_sz)
+{
+  int i, rc; /*, send_flags = cfg_msg_more[0] ? MSG_MORE : 0; */
+  for( i = 0; i < cfg_n_pings[0]; ++i ) {
+    /* NB. Solaris doesn't block in UDP recv with 0 length buffer. */
+    rc = mux_recv(read_fd, ppbuf, recv_size(recv_sz), MSG_WAITALL);
+    NT_TESTi3(rc, ==, recv_sz);
+    rc = do_send(write_fd, ppbuf, send_sz, 0);
+    NT_TESTi3(rc, ==, send_sz);
+  }
+}
+
+#else
+#define IS_TESTING_LATENCY 0
 static void do_ping(int read_fd, int write_fd, int sz)
 {
   int i, rc, send_flags = cfg_msg_more[0] ? MSG_MORE : 0;
@@ -590,7 +618,7 @@ static void do_pong(int read_fd, int write_fd, int recv_sz, int send_sz)
   rc = do_send(write_fd, ppbuf, send_sz, 0);
   NT_TESTi3(rc, ==, send_sz);
 }
-
+#endif
 
 static void add_fds(int us)
 {
@@ -1039,6 +1067,12 @@ static int do_server2(int ss)
       break;
     send_size = sfnt_sock_get_int(ss);
     recv_size = (uint64_t) send_size * cfg_n_pings[1] / cfg_n_pings[0];
+#ifdef TEST_LATENCY
+    if( send_size != recv_size ) {
+        sfnt_err("ERROR: latency test send_size:%d != recv_size:%d\n", send_size, recv_size);
+        exit(1);
+    }
+#endif
 
     while( iter-- )
       do_pong(read_fd, write_fd, recv_size, send_size);
@@ -1069,7 +1103,7 @@ static void do_pings(int ss, int read_fd, int write_fd, int msg_size,
     sfnt_tsc(&start);
     do_ping(read_fd, write_fd, msg_size);
     sfnt_tsc(&stop);
-    
+   
     results[i] = sfnt_tsc_nsec(&tsc, stop - start - tsc.tsc_cost);
     if( ! cfg_rtt )
       results[i] /= 2;
@@ -1405,6 +1439,7 @@ static int do_client2(int ss, const char* hostport, int local)
    * info. We re-sample more accurately again after that */
   NT_TRY(sfnt_tsc_get_params_end(&tsc_measure, &tsc, 100));
   sfnt_dump_sys_info(&tsc);
+  printf("# testing with arguments: cfg_port:%d, cfg_rtt:%d, IS_TESTING_LATENCY:%d\n", cfg_port, cfg_rtt, IS_TESTING_LATENCY);
   if( server_ld_preload != NULL )
     printf("# server LD_PRELOAD=%s\n", server_ld_preload);
   printf("# percentile=%g\n", (double) cfg_percentile);
